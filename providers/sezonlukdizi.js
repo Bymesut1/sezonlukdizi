@@ -1,5 +1,5 @@
 // ============================================================
-//  sezonlukdizi — Nuvio scraper                                  v1.0.0
+//  sezonlukdizi — Nuvio scraper                                  v1.0.2
 //  Site: https://sezonlukdizi.cc  (yalnızca dizi)
 //  Akış: TMDB -> başlık/slug -> bölüm sayfası (bölüm id'si)
 //        -> dataAlternatif3.asp (dublaj + altyazı) -> dataEmbed.asp
@@ -21,7 +21,7 @@ var PROVIDER_ID = 'sezonlukdizi';
 var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 var dbg = [];
-function note(m) { dbg.push(String(m).slice(0, 110)); }
+function note(m) { dbg.push(String(m).slice(0, 120)); }
 
 // ---------------- Genel yardımcılar ----------------
 function withTimeout(promise, ms) {
@@ -329,11 +329,11 @@ function findEpisode(titles, season, episode) {
 }
 
 // ---------------- Site: alternatifler ve gömme adresleri ----------------
-function ajaxPost(path, pairs, referer) {
+function ajaxPost(path, pairs, referer, label) {
   return req('POST', AYAR.SITE + path, {
-    'User-Agent': UA, 'Accept': '*/*', 'X-Requested-With': 'XMLHttpRequest',
+    'User-Agent': UA, 'Accept': 'application/json, text/javascript, */*; q=0.01', 'X-Requested-With': 'XMLHttpRequest',
     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Referer': referer, 'Origin': AYAR.SITE
-  }, formEnc(pairs));
+  }, formEnc(pairs), label);
 }
 function parseAlt(text) {
   var out = [], o;
@@ -352,16 +352,44 @@ function iframeOf(text) {
   var m = t.match(/<iframe[^>]+src=["']([^"']+)["']/i) || t.match(/(https?:\/\/[^"'\s<>]+)/i);
   return m ? absUrl(m[1]) : null;
 }
+function snip(t, n) { return String(t || '').replace(/\s+/g, ' ').slice(0, n || 90); }
+// dataAlternatif3 / 2 / (soneksiz) sırayla denenir, ilk dolu yanıt kullanılır
+function altFetch(bid, dil, pageUrl) {
+  var vars = ['3', '2', ''];
+  function step(i) {
+    if (i >= vars.length) return Promise.resolve({ alts: [], suffix: '3' });
+    return ajaxPost('/ajax/dataAlternatif' + vars[i] + '.asp', [['bid', bid], ['dil', dil]], pageUrl, 'A' + vars[i] + ' d' + dil).then(function (r) {
+      var alts = parseAlt(r.text);
+      if (!alts.length) {
+        if (i === 0) note('yanit ' + snip(r.text, 80));
+        return step(i + 1);
+      }
+      return { alts: alts, suffix: vars[i] };
+    });
+  }
+  return step(0);
+}
+function embedFetch(id, suffix, pageUrl) {
+  var paths = ['/ajax/dataEmbed.asp'];
+  if (suffix) paths.push('/ajax/dataEmbed' + suffix + '.asp');
+  function step(i, lastText) {
+    if (i >= paths.length) return Promise.resolve({ iu: null, text: lastText });
+    return ajaxPost(paths[i], [['id', id]], pageUrl).then(function (er) {
+      var iu = iframeOf(er.text);
+      return iu ? { iu: iu, text: er.text } : step(i + 1, er.text);
+    });
+  }
+  return step(0, '');
+}
 function streamsForLang(bid, dil, pageUrl) {
   var etiket = dil === 0 ? 'Türkçe Dublaj' : 'Altyazı';
-  return ajaxPost('/ajax/dataAlternatif3.asp', [['bid', bid], ['dil', dil]], pageUrl).then(function (r) {
-    var alts = parseAlt(r.text).slice(0, AYAR.MAKS_ALTERNATIF);
-    note('dil' + dil + ' alt ' + alts.length);
+  return altFetch(bid, dil, pageUrl).then(function (found) {
+    var alts = found.alts.slice(0, AYAR.MAKS_ALTERNATIF);
+    note('dil' + dil + ' alt ' + alts.length + (found.suffix ? ' (' + found.suffix + ')' : ''));
     return Promise.all(alts.map(function (a) {
-      return ajaxPost('/ajax/dataEmbed.asp', [['id', a.id]], pageUrl).then(function (er) {
-        var iu = iframeOf(er.text);
-        if (!iu) { note('embed yok ' + a.ad); return null; }
-        return resolveEmbed(iu).catch(function () { return null; }).then(function (res) {
+      return embedFetch(a.id, found.suffix, pageUrl).then(function (er) {
+        if (!er.iu) { note('embed yok ' + a.ad + ' ' + snip(er.text, 50)); return null; }
+        return resolveEmbed(er.iu).catch(function () { return null; }).then(function (res) {
           return res ? { ad: a.ad, etiket: etiket, dil: dil, r: res } : null;
         });
       });
@@ -371,7 +399,7 @@ function streamsForLang(bid, dil, pageUrl) {
 
 // ---------------- Ana akış ----------------
 function getStreamsInner(tmdbId, mediaType, season, episode, holder) {
-  dbg = ['v1.0.0'];
+  dbg = ['v1.0.2'];
   if (mediaType !== 'tv' && mediaType !== 'series') return Promise.resolve(debugStream('sadece dizi destekleniyor'));
   season = parseInt(season, 10) || 1; episode = parseInt(episode, 10) || 1;
   var base = 'https://api.themoviedb.org/3/tv/' + tmdbId + '?api_key=' + TMDB_KEY;
