@@ -1,5 +1,5 @@
 // ============================================================
-//  sezonlukdizi — Nuvio scraper                                  v1.0.3
+//  sezonlukdizi — Nuvio scraper                                  v1.0.4
 //  Site: https://sezonlukdizi.cc  (yalnızca dizi)
 //  Akış: TMDB -> başlık/slug -> bölüm sayfası (bölüm id'si)
 //        -> dataAlternatif3.asp (dublaj + altyazı) -> dataEmbed.asp
@@ -236,9 +236,9 @@ function resolveVidmoly(u) {
 function filemoonPlayback(host, code, referer) {
   var url = 'https://' + host + '/api/videos/' + code + '/embed/playback';
   return req('GET', url, { 'User-Agent': UA, 'Referer': referer, 'Accept': 'application/json' }, null, 'FM').then(function (r) {
-    var o; try { o = JSON.parse(r.text); } catch (e) { return null; }
+    var o; try { o = JSON.parse(r.text); } catch (e) { note('fm yanit ' + snip(r.text, 70)); return null; }
     var pb = o && o.playback;
-    if (!pb || !pb.iv || !pb.payload || !pb.key_parts) return null;
+    if (!pb || !pb.iv || !pb.payload || !pb.key_parts) { note('fm ' + r.status + ' ' + snip(r.text, 70)); return null; }
     var key = []; pb.key_parts.forEach(function (p) { key = key.concat(b64decode(p)); });
     var plain = null;
     try { plain = gcmDecryptCombined(key, b64decode(pb.iv), b64decode(pb.payload)); } catch (e2) { plain = null; }
@@ -263,7 +263,8 @@ function resolveFilemoon(u) {
         var iu = absUrl(ifr[1]), ic = (iu.match(/\/(?:e|d|embed)\/([A-Za-z0-9]+)/) || [])[1];
         if (ic) return filemoonPlayback(hostOf(iu), ic, iu).then(function (x) { return x ? hdr(x, 'https://' + hostOf(iu) + '/') : null; });
       }
-      note('filemoon kaynak yok');
+      note('filemoon kaynak yok ' + strip(u).slice(0, 60));
+      note('  sayfa ' + snip(r.text, 100));
       return null;
     });
   };
@@ -271,19 +272,73 @@ function resolveFilemoon(u) {
   return filemoonPlayback(host, code, u).then(function (x) { return x ? hdr(x, 'https://' + host + '/') : viaPage(); });
 }
 
-function resolveEmbed(u) {
+function strip(u) { return String(u || '').replace(/^https?:\/\//i, ''); }
+function outLinks(text, selfHost) {
+  var t = String(text || '').replace(/\\\//g, '/').replace(/&amp;/g, '&');
+  var re = /https?:\/\/[^"'\s<>\\)]+/gi, m, out = [];
+  while ((m = re.exec(t))) {
+    var h = hostOf(m[0]);
+    if (/w3\.org|google|gstatic|facebook|twitter|schema\.org|cloudflare|jquery|bootstrap|fontawesome|jsdelivr|cdnjs|yandex|doubleclick/i.test(h)) continue;
+    out.push(m[0]);
+  }
+  return uniq(out);
+}
+function findPlayable(text, pageUrl) {
+  var t = String(text || '');
+  var packed = unpack(t);
+  var hay = [t, packed || ''];
+  var host = hostOf(pageUrl);
+  var i, m, hdrs = { 'User-Agent': UA, 'Referer': 'https://' + host + '/' };
+  for (i = 0; i < hay.length; i++) {
+    m = findM3u8(hay[i]);
+    if (m) return { url: m, type: 'hls', headers: hdrs };
+  }
+  for (i = 0; i < hay.length; i++) {
+    var tt = hay[i].replace(/\\\//g, '/').replace(/&amp;/g, '&');
+    m = tt.match(/["'](https?:\/\/[^"'\s<>\\]+\.(?:mp4|mkv|webm)[^"'\s<>\\]*)["']/i);
+    if (m) return { url: m[1], type: 'mp4', headers: hdrs };
+    m = tt.match(/\bfile["']?\s*[:=]\s*["'](https?:\/\/[^"'\s<>\\]+)["']/i);
+    if (m && !/\.(?:js|css|png|jpe?g|gif|svg|vtt|srt)(\?|$)/i.test(m[1]) && hostOf(m[1]) !== host) return { url: m[1], type: /\.m3u8/i.test(m[1]) ? 'hls' : 'mp4', headers: hdrs };
+  }
+  // atob("...") içinde saklanmış adresler
+  var re = /atob\(\s*["']([A-Za-z0-9+\/=_\-]{16,})["']\s*\)/g;
+  for (i = 0; i < hay.length; i++) {
+    while ((m = re.exec(hay[i]))) {
+      var dec = '';
+      try { dec = utf8Decode(b64decode(m[1])); } catch (e) { dec = ''; }
+      var mm = findM3u8(dec);
+      if (mm) return { url: mm, type: 'hls', headers: hdrs };
+    }
+  }
+  return null;
+}
+function resolveGeneric(u, depth) {
+  return req('GET', u, { 'User-Agent': UA, 'Referer': AYAR.SITE + '/' }, null, 'GN').then(function (r) {
+    var hit = findPlayable(r.text, u);
+    if (hit) return hit;
+    // iç içe iframe / yönlendirme
+    var nxt = null;
+    var ifr = r.text.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+    if (ifr) nxt = ifr[1];
+    if (!nxt) { var lo = r.text.match(/(?:location\.(?:href|replace)\s*[=(]\s*|content=["']\d+;\s*url=)["']?([^"'\s)<>]+)/i); if (lo) nxt = lo[1]; }
+    if (nxt && depth < 3) {
+      nxt = absUrl(nxt.replace(/&amp;/g, '&'));
+      if (/^https?:\/\//i.test(nxt) && nxt !== u) { note('ic ' + strip(nxt).slice(0, 100)); return resolveEmbed(nxt, depth + 1); }
+    }
+    note('desteklenmeyen ' + strip(u).slice(0, 100));
+    outLinks(r.text, hostOf(u)).slice(0, 4).forEach(function (l) { note('  > ' + strip(l).slice(0, 100)); });
+    return null;
+  });
+}
+function resolveEmbed(u, depth) {
+  depth = depth || 0;
   u = absUrl(u);
   if (/\.m3u8(\?|$)/i.test(u)) return Promise.resolve({ url: u, type: 'hls', headers: { 'User-Agent': UA } });
   if (/\.(mp4|mkv|webm)(\?|$)/i.test(u)) return Promise.resolve({ url: u, type: 'mp4', headers: { 'User-Agent': UA } });
   if (/pixeldrain\./i.test(u)) return resolvePixeldrain(u);
   if (/vidmoly\./i.test(u)) return resolveVidmoly(u);
   if (/filemoon|moonplayer|bysezoxexe|bysekoze|f16px|fmoon|kerapoxy|\/e\/[a-z0-9]+$/i.test(u)) return resolveFilemoon(u);
-  // bilinmeyen barındırıcı: sayfada doğrudan m3u8 aramayı dene
-  return req('GET', u, { 'User-Agent': UA, 'Referer': AYAR.SITE + '/' }, null, 'GN').then(function (r) {
-    var m = findM3u8(r.text) || findM3u8(unpack(r.text) || '');
-    if (!m) { note('desteklenmeyen ' + hostOf(u)); return null; }
-    return { url: m, type: 'hls', headers: { 'User-Agent': UA, 'Referer': 'https://' + hostOf(u) + '/' } };
-  });
+  return resolveGeneric(u, depth);
 }
 
 // ---------------- Site: bölüm sayfası bulma ----------------
@@ -440,7 +495,7 @@ function streamsFromProbe(pr, dil, pageUrl, found) {
 
 // ---------------- Ana akış ----------------
 function getStreamsInner(tmdbId, mediaType, season, episode, holder) {
-  dbg = ['v1.0.3'];
+  dbg = ['v1.0.4'];
   if (mediaType !== 'tv' && mediaType !== 'series') return Promise.resolve(debugStream('sadece dizi destekleniyor'));
   season = parseInt(season, 10) || 1; episode = parseInt(episode, 10) || 1;
   var base = 'https://api.themoviedb.org/3/tv/' + tmdbId + '?api_key=' + TMDB_KEY;
