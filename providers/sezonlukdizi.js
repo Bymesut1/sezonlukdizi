@@ -1,5 +1,5 @@
 // ============================================================
-//  sezonlukdizi — Nuvio scraper                                  v1.1.3
+//  sezonlukdizi — Nuvio scraper                                  v1.1.4
 //  Site: https://sezonlukdizi.cc  (yalnızca dizi)
 //  Akış: TMDB -> başlık/slug -> bölüm sayfası (bölüm id'si)
 //        -> dataAlternatif3.asp (dublaj + altyazı) -> dataEmbed.asp
@@ -9,8 +9,8 @@
 var AYAR = {
   SITE: 'https://sezonlukdizi.cc',
   EKLENTI_ADI: 'SezonlukDizi',
-  DEBUG_MODU: true,     // false: akış yoksa temiz boş liste ("kaynak yok"); true: nedenini DEBUG satırlarıyla gösterir
-  SADECE_VIDMOLY: true,  // true: yalnızca VidMoly kaynakları denenir
+  DEBUG_MODU: false,     // false: akış yoksa temiz boş liste ("kaynak yok"); true: nedenini DEBUG satırlarıyla gösterir
+  SADECE_VIDMOLY: false, // false: önce VidMoly, captcha'lıysa diğerleri sırayla denenir (ilk çalışanda durur); true: sadece VidMoly
   MAKS_AKIS: 12,
   MAKS_ALTERNATIF: 10,   // her dil için denenecek en fazla alternatif sayısı
   ISTEK_SURESI: 12000,
@@ -574,11 +574,13 @@ function streamsFromProbe(pr, dil, pageUrl, found) {
   var etiket = dil === 0 ? 'Türkçe Dublaj' : 'Altyazı';
   var alts = pr.alts.slice(0, AYAR.MAKS_ALTERNATIF);
   if (AYAR.SADECE_VIDMOLY) alts = pr.alts.filter(function (a) { return /vidmoly/i.test(a.ad); }).slice(0, 2);
+  else alts = alts.slice().sort(function (x, y) { return (/vidmoly/i.test(y.ad) ? 1 : 0) - (/vidmoly/i.test(x.ad) ? 1 : 0); });
   note('dil' + dil + ' alt ' + alts.length + '/' + pr.alts.length + (pr.path ? ' ' + pr.path.replace('/ajax/', '') : ''));
   var out = [], chain = Promise.resolve();
   // tek tek (sirayla) istek: Cloudflare hiz sinirina takilmamak icin
   alts.forEach(function (a) {
     chain = chain.then(function () {
+      if (!AYAR.SADECE_VIDMOLY && out.length) return null;   // calisan kaynak bulundu, digerlerine istek atma
       return embedFetch(a.id, pr.path, pageUrl, found).then(function (er) {
         if (!er.iu) { note('embed yok ' + a.ad + ' ' + snip(er.text, 50)); return null; }
         note('emb ' + snip(a.ad, 14) + ' ' + strip(er.iu).slice(0, 80));
@@ -595,7 +597,7 @@ function streamsFromProbe(pr, dil, pageUrl, found) {
 
 // ---------------- Ana akış ----------------
 function getStreamsInner(tmdbId, mediaType, season, episode, holder) {
-  dbg = ['v1.1.2'];
+  dbg = ['v1.1.3'];
   manuelStreams(tmdbId, parseInt(season, 10) || 1, parseInt(episode, 10) || 1).forEach(function (x) { holder.streams.push(x); });
   if (mediaType !== 'tv' && mediaType !== 'series') return Promise.resolve(debugStream('sadece dizi destekleniyor'));
   season = parseInt(season, 10) || 1; episode = parseInt(episode, 10) || 1;
