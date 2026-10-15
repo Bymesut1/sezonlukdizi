@@ -1,5 +1,5 @@
 // ============================================================
-//  sezonlukdizi — Nuvio scraper                                  v1.1.1
+//  sezonlukdizi — Nuvio scraper                                  v1.1.2
 //  Site: https://sezonlukdizi.cc  (yalnızca dizi)
 //  Akış: TMDB -> başlık/slug -> bölüm sayfası (bölüm id'si)
 //        -> dataAlternatif3.asp (dublaj + altyazı) -> dataEmbed.asp
@@ -9,7 +9,7 @@
 var AYAR = {
   SITE: 'https://sezonlukdizi.cc',
   EKLENTI_ADI: 'SezonlukDizi',
-  DEBUG_MODU: true,     // false: akış yoksa temiz boş liste ("kaynak yok"); true: nedenini DEBUG satırlarıyla gösterir
+  DEBUG_MODU: false,     // false: akış yoksa temiz boş liste ("kaynak yok"); true: nedenini DEBUG satırlarıyla gösterir
   SADECE_VIDMOLY: true,  // true: yalnızca VidMoly kaynakları denenir
   MAKS_AKIS: 12,
   MAKS_ALTERNATIF: 10,   // her dil için denenecek en fazla alternatif sayısı
@@ -481,7 +481,7 @@ function iframesOf(text) {
 }
 function isCaptcha(u) { return /recaptcha|captcha/i.test(String(u)); }
 function iframeOf(text) {
-  var good = iframesOf(text).filter(function (x) { return !isCaptcha(x); });
+  var good = iframesOf(text).filter(function (x) { return !isCaptcha(x) && !/cloudflare\.com/i.test(hostOf(x)); });
   return good.length ? good[0] : null;
 }
 function snip(t, n) { return String(t || '').replace(/\s+/g, ' ').slice(0, n || 90); }
@@ -545,6 +545,14 @@ function probeAlt(bid, dil, pageUrl, cands) {
   }
   return step(0);
 }
+function cfBlock(text, status) {
+  var t = String(text || '');
+  if (!/cloudflare/i.test(t)) return null;
+  var c = t.match(/error code:?\s*(\d{4})/i) || t.match(/error\s+(\d{4})/i) || t.match(/cloudflare-1\w*\/error-(\d{4})/i);
+  if (c) return c[1];
+  if (/attention required|you are being rate limited|access denied|just a moment/i.test(t) || status === 403 || status === 429 || status === 503) return 'cf';
+  return null;
+}
 function embedFetch(id, altPath, pageUrl, found) {
   var paths = embedCandidates(altPath, found);
   var cap = null;
@@ -552,6 +560,8 @@ function embedFetch(id, altPath, pageUrl, found) {
     if (i >= paths.length) return Promise.resolve({ iu: cap, text: lastText });
     return ajaxPost(paths[i], [['id', id]], pageUrl).then(function (er) {
       if (er.status === 404) return step(i + 1, lastText);
+      var cf = cfBlock(er.text, er.status);
+      if (cf) { note('cloudflare engeli ' + cf + ' ' + er.status); return { iu: null, text: 'CF ' + cf }; }
       var iu = iframeOf(er.text);
       if (iu) return { iu: iu, text: er.text };
       if (!cap) { var c = iframesOf(er.text).filter(isCaptcha)[0]; if (c) cap = c; }
@@ -563,23 +573,29 @@ function embedFetch(id, altPath, pageUrl, found) {
 function streamsFromProbe(pr, dil, pageUrl, found) {
   var etiket = dil === 0 ? 'Türkçe Dublaj' : 'Altyazı';
   var alts = pr.alts.slice(0, AYAR.MAKS_ALTERNATIF);
-  note('dil' + dil + ' alt ' + alts.length + (pr.path ? ' ' + pr.path.replace('/ajax/', '') : ''));
-  return Promise.all(alts.map(function (a) {
-    return embedFetch(a.id, pr.path, pageUrl, found).then(function (er) {
-      if (!er.iu) { note('embed yok ' + a.ad + ' ' + snip(er.text, 50)); return null; }
-      note('emb ' + snip(a.ad, 14) + ' ' + strip(er.iu).slice(0, 80));
-      if (isCaptcha(er.iu)) { note('  atlandi: insan dogrulamasi (Turnstile) arkasinda'); return null; }
-      if (AYAR.SADECE_VIDMOLY && !/vidmoly\./i.test(er.iu)) { note('  atlandi: vidmoly degil'); return null; }
-      return resolveEmbed(er.iu).catch(function () { return null; }).then(function (res) {
-        return res ? { ad: a.ad, etiket: etiket, dil: dil, r: res } : null;
+  if (AYAR.SADECE_VIDMOLY) alts = pr.alts.filter(function (a) { return /vidmoly/i.test(a.ad); }).slice(0, 2);
+  note('dil' + dil + ' alt ' + alts.length + '/' + pr.alts.length + (pr.path ? ' ' + pr.path.replace('/ajax/', '') : ''));
+  var out = [], chain = Promise.resolve();
+  // tek tek (sirayla) istek: Cloudflare hiz sinirina takilmamak icin
+  alts.forEach(function (a) {
+    chain = chain.then(function () {
+      return embedFetch(a.id, pr.path, pageUrl, found).then(function (er) {
+        if (!er.iu) { note('embed yok ' + a.ad + ' ' + snip(er.text, 50)); return null; }
+        note('emb ' + snip(a.ad, 14) + ' ' + strip(er.iu).slice(0, 80));
+        if (isCaptcha(er.iu)) { note('  atlandi: insan dogrulamasi arkasinda'); return null; }
+        if (AYAR.SADECE_VIDMOLY && !/vidmoly\./i.test(er.iu)) { note('  atlandi: vidmoly degil'); return null; }
+        return resolveEmbed(er.iu).catch(function () { return null; }).then(function (res) {
+          if (res) out.push({ ad: a.ad, etiket: etiket, dil: dil, r: res });
+        });
       });
     });
-  }));
+  });
+  return chain.then(function () { return out; });
 }
 
 // ---------------- Ana akış ----------------
 function getStreamsInner(tmdbId, mediaType, season, episode, holder) {
-  dbg = ['v1.1.1'];
+  dbg = ['v1.1.2'];
   manuelStreams(tmdbId, parseInt(season, 10) || 1, parseInt(episode, 10) || 1).forEach(function (x) { holder.streams.push(x); });
   if (mediaType !== 'tv' && mediaType !== 'series') return Promise.resolve(debugStream('sadece dizi destekleniyor'));
   season = parseInt(season, 10) || 1; episode = parseInt(episode, 10) || 1;
