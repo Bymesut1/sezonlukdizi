@@ -1,5 +1,5 @@
 // ============================================================
-//  sezonlukdizi — Nuvio scraper                                  v1.1.0
+//  sezonlukdizi — Nuvio scraper                                  v1.1.1
 //  Site: https://sezonlukdizi.cc  (yalnızca dizi)
 //  Akış: TMDB -> başlık/slug -> bölüm sayfası (bölüm id'si)
 //        -> dataAlternatif3.asp (dublaj + altyazı) -> dataEmbed.asp
@@ -10,6 +10,7 @@ var AYAR = {
   SITE: 'https://sezonlukdizi.cc',
   EKLENTI_ADI: 'SezonlukDizi',
   DEBUG_MODU: false,     // false: akış yoksa temiz boş liste ("kaynak yok"); true: nedenini DEBUG satırlarıyla gösterir
+  SADECE_VIDMOLY: true,  // true: yalnızca VidMoly kaynakları denenir
   MAKS_AKIS: 12,
   MAKS_ALTERNATIF: 10,   // her dil için denenecek en fazla alternatif sayısı
   ISTEK_SURESI: 12000,
@@ -227,13 +228,48 @@ function resolvePixeldrain(u) {
   return Promise.resolve({ url: 'https://pixeldrain.com/api/file/' + m[1], type: 'mp4', headers: {} });
 }
 
-function resolveVidmoly(u) {
-  var h = { 'User-Agent': UA, 'Referer': AYAR.SITE + '/' };
+function vidmolyCode(u) {
+  var m = String(u).match(/vidmoly\.[a-z]+\/(?:embed-|w\/|e\/|d\/|dl\/)?([a-z0-9]{10,14})/i);
+  return m ? m[1] : null;
+}
+function vidmolyTry(u) {
+  var h = { 'User-Agent': UA, 'Referer': CUR_PAGE || (AYAR.SITE + '/'), 'Accept': 'text/html,*/*;q=0.8' };
   return req('GET', u, h, null, 'VM').then(function (r) {
     var m = findM3u8(r.text);
     if (!m) { var un = unpack(r.text); if (un) m = findM3u8(un); }
-    if (!m) { note('vidmoly m3u8 yok'); return null; }
-    return { url: m, type: 'hls', headers: { 'User-Agent': UA, 'Referer': 'https://' + (hostOf(u) || 'vidmoly.net') + '/' } };
+    if (!m) {
+      // atob(...) ile saklanmış adres
+      var a = String(r.text).match(/atob\(\s*["']([A-Za-z0-9+\/=_\-]{16,})["']\s*\)/);
+      if (a) { try { m = findM3u8(utf8Decode(b64decode(a[1]))); } catch (e) { m = null; } }
+    }
+    if (!m) {
+      // sayfa içinde iç iframe varsa onu da dene
+      var ifr = String(r.text).match(/<iframe[^>]+src=["']([^"']+vidmoly[^"']*)["']/i);
+      if (ifr && absUrl(ifr[1]) !== u) return { next: absUrl(ifr[1]) };
+    }
+    return m ? { m3u8: m, host: hostOf(r.url || u) || hostOf(u) } : null;
+  });
+}
+function resolveVidmoly(u) {
+  var code = vidmolyCode(u);
+  var tries = [u];
+  if (code) {
+    ['vidmoly.me', 'vidmoly.net', 'vidmoly.to'].forEach(function (d) {
+      tries.push('https://' + d + '/embed-' + code + '.html');
+    });
+  }
+  tries = uniq(tries).slice(0, 4);
+  function seq(i) {
+    if (i >= tries.length) { note('vidmoly m3u8 yok'); return Promise.resolve(null); }
+    return vidmolyTry(tries[i]).then(function (x) {
+      if (x && x.next) return vidmolyTry(x.next).then(function (y) { return y && y.m3u8 ? y : seq(i + 1); });
+      return x && x.m3u8 ? x : seq(i + 1);
+    });
+  }
+  return seq(0).then(function (x) {
+    if (!x) return null;
+    var origin = 'https://' + (x.host || 'vidmoly.me');
+    return { url: x.m3u8, type: 'hls', headers: { 'User-Agent': UA, 'Referer': origin + '/', 'Origin': origin } };
   });
 }
 
@@ -533,6 +569,7 @@ function streamsFromProbe(pr, dil, pageUrl, found) {
       if (!er.iu) { note('embed yok ' + a.ad + ' ' + snip(er.text, 50)); return null; }
       note('emb ' + snip(a.ad, 14) + ' ' + strip(er.iu).slice(0, 80));
       if (isCaptcha(er.iu)) { note('  atlandi: insan dogrulamasi (Turnstile) arkasinda'); return null; }
+      if (AYAR.SADECE_VIDMOLY && !/vidmoly\./i.test(er.iu)) { note('  atlandi: vidmoly degil'); return null; }
       return resolveEmbed(er.iu).catch(function () { return null; }).then(function (res) {
         return res ? { ad: a.ad, etiket: etiket, dil: dil, r: res } : null;
       });
@@ -542,7 +579,7 @@ function streamsFromProbe(pr, dil, pageUrl, found) {
 
 // ---------------- Ana akış ----------------
 function getStreamsInner(tmdbId, mediaType, season, episode, holder) {
-  dbg = ['v1.1.0'];
+  dbg = ['v1.1.1'];
   manuelStreams(tmdbId, parseInt(season, 10) || 1, parseInt(episode, 10) || 1).forEach(function (x) { holder.streams.push(x); });
   if (mediaType !== 'tv' && mediaType !== 'series') return Promise.resolve(debugStream('sadece dizi destekleniyor'));
   season = parseInt(season, 10) || 1; episode = parseInt(episode, 10) || 1;
