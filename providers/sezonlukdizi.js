@@ -1,5 +1,5 @@
 // ============================================================
-//  sezonlukdizi — Nuvio scraper                                  v1.1.0
+//  sezonlukdizi — Nuvio scraper                                  v1.1.1
 //  Site: https://sezonlukdizi.cc  (yalnızca dizi)
 //  Akış: TMDB -> başlık/slug -> bölüm sayfası (bölüm id'si)
 //        -> dataAlternatif3.asp (dublaj + altyazı) -> dataEmbed.asp
@@ -12,8 +12,8 @@ var AYAR = {
   DEBUG_MODU: true,      // true: akış çıkmazsa nedenini "DEBUG" satırlarıyla gösterir
   MAKS_AKIS: 12,
   MAKS_ALTERNATIF: 6,    // her dil için denenecek en fazla alternatif sayısı
-  ISTEK_SURESI: 9000,
-  GENEL_SURE: 50000
+  ISTEK_SURESI: 12000,
+  GENEL_SURE: 45000
 };
 
 var TMDB_KEY = '000316508321ce461cf81e7c6815eec7';
@@ -22,9 +22,7 @@ var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
 
 var dbg = [];
 var CUR_PAGE = '';
-var PART = [];          // çözülen akışlar (zaman aşımında yine de döndürülür)
-var CAP_PEEKED = false;
-function note(m) { dbg.push(String(m).slice(0, 170)); }
+function note(m) { dbg.push(String(m).slice(0, 120)); }
 
 // ---------------- Genel yardımcılar ----------------
 function withTimeout(promise, ms) {
@@ -237,144 +235,65 @@ function resolveVidmoly(u) {
 }
 
 function embedParent() { return CUR_PAGE || (AYAR.SITE + '/'); }
-function siteHost() { return hostOf(AYAR.SITE); }
-function copyObj(o) { var r = {}, k; for (k in o) if (Object.prototype.hasOwnProperty.call(o, k)) r[k] = o[k]; return r; }
-function rndHex(n) { var t = '', i; for (i = 0; i < n; i++) t += Math.floor(Math.random() * 16).toString(16); return t; }
-
-// Byse/Filemoon videoları "izinli alan adı" ile kilitli. Sunucu, gömen siteyi
-// X-Embed-Origin / X-Embed-Parent / X-Embed-Referer başlıklarından okur.
-// Bu başlıklar eksikse Origin'e (bysejikuar.com) düşer ve 403 "embedding from ... not allowed" verir.
-function embedHeaderSets(u, host) {
-  var page = embedParent(), site = AYAR.SITE, own = 'https://' + host;
-  function mk(ref, org, par, xo, xr) {
-    return { 'User-Agent': UA, 'Accept': '*/*', 'Accept-Language': 'tr-TR,tr;q=0.9,en;q=0.8',
-      'Referer': ref, 'Origin': org, 'X-Embed-Parent': par, 'X-Embed-Origin': xo, 'X-Embed-Referer': xr };
-  }
-  return [
-    mk(u, own, page, site, page),
-    mk(site + '/', site, page, site, page),
-    mk(u, own, site, site, site + '/'),
-    mk(u, own, siteHost(), siteHost(), page)
-  ];
-}
-
-function fmDetails(host, code, hd) {
-  var d = copyObj(hd); d['Accept'] = 'application/json';
-  return req('GET', 'https://' + host + '/api/videos/' + code + '/embed/details', d, null, null).then(function (r) {
-    var o = null; try { o = JSON.parse(r.text); } catch (e) { o = null; }
-    var frame = (o && (o.embed_frame_url || o.embedFrameUrl || o.embed_url)) || '';
-    return { status: r.status, text: r.text, frame: frame };
-  });
-}
-
-function fmParsePlayback(r) {
-  var o = null; try { o = JSON.parse(r.text); } catch (e) { o = null; }
-  var pb = o && o.playback;
-  if (!pb || !pb.iv || !pb.payload || !pb.key_parts) return { err: r.status + ' ' + snip(r.text, 140) };
-  var key = []; pb.key_parts.forEach(function (p) { key = key.concat(b64decode(p)); });
-  var plain = null;
-  try { plain = gcmDecryptCombined(key, b64decode(pb.iv), b64decode(pb.payload)); } catch (e2) { plain = null; }
-  if (!plain) return { err: 'sifre cozulemedi' };
-  var txt = utf8Decode(plain), j = null; try { j = JSON.parse(txt); } catch (e3) { j = null; }
-  var src = j && j.sources && j.sources[0];
-  var u2 = (src && (src.url || src.file)) || findM3u8(txt);
-  return u2 ? { url: String(u2).replace(/\\\//g, '/') } : { err: 'kaynak yok ' + snip(txt, 80) };
-}
-
-function fmPlayback(host, code, hd) {
+function filemoonPlayback(host, code, referer, parent, method) {
   var url = 'https://' + host + '/api/videos/' + code + '/embed/playback';
-  return req('GET', url, hd, null, null).then(function (r) {
-    var p = fmParsePlayback(r);
-    if (p.url) return p;
-    if ([400, 401, 405, 415, 422].indexOf(r.status) >= 0) {
-      var hp = copyObj(hd); hp['Content-Type'] = 'application/json';
-      var body = JSON.stringify({ fingerprint: { token: '', viewer_id: rndHex(32), device_id: rndHex(32), confidence: 0.5 } });
-      return req('POST', url, hp, body, null).then(function (r2) {
-        var p2 = fmParsePlayback(r2);
-        return p2.url ? p2 : { err: 'GET ' + p.err + ' | POST ' + p2.err };
-      });
-    }
-    return p;
+  var hd = { 'User-Agent': UA, 'Referer': referer, 'Accept': '*/*', 'Origin': 'https://' + host, 'X-Embed-Parent': parent || embedParent() };
+  return req(method || 'GET', url, hd, method === 'POST' ? '{}' : null, 'FM').then(function (r) {
+    if (r.status === 428 || /captcha_required/i.test(r.text)) { note('filemoon: insan dogrulamasi (captcha_required), atlandi'); return null; }
+    if (r.status === 405 && !method) { note('filemoon: yayin adresi GET kabul etmiyor, atlandi'); return null; }
+    var o; try { o = JSON.parse(r.text); } catch (e) { note('fm yanit ' + snip(r.text, 70)); return null; }
+    var pb = o && o.playback;
+    if (!pb || !pb.iv || !pb.payload || !pb.key_parts) { note('fm ' + r.status + ' ' + snip(r.text, 70)); return null; }
+    var key = []; pb.key_parts.forEach(function (p) { key = key.concat(b64decode(p)); });
+    var plain = null;
+    try { plain = gcmDecryptCombined(key, b64decode(pb.iv), b64decode(pb.payload)); } catch (e2) { plain = null; }
+    if (!plain) { note('filemoon sifre cozulemedi'); return null; }
+    var txt = utf8Decode(plain), s; try { s = JSON.parse(txt); } catch (e3) { s = null; }
+    var u2 = s && s.sources && s.sources[0] && (s.sources[0].url || s.sources[0].file);
+    return u2 || findM3u8(txt);
   });
 }
-
-// Oynatıcı JS paketinden gerçek başlık adlarını bul (yöntem değiştiyse kendini uyarlar)
-function discoverHeaders(u, host) {
-  return req('GET', u, { 'User-Agent': UA, 'Referer': embedParent() }, null, 'FP').then(function (r) {
-    var srcs = [], re = /<script[^>]+src=["']([^"']+\.js[^"']*)["']/gi, m;
-    while ((m = re.exec(r.text))) {
-      var su = m[1];
-      if (/^\/\//.test(su)) su = 'https:' + su; else if (/^\//.test(su)) su = 'https://' + host + su; else if (!/^https?:/i.test(su)) su = 'https://' + host + '/' + su;
-      srcs.push(su);
-    }
-    srcs = uniq(srcs).slice(0, 3);
-    return Promise.all(srcs.map(function (su) {
-      return req('GET', su, { 'User-Agent': UA, 'Referer': u }, null, null, 9000).then(function (jr) { return jr.text; });
-    })).then(function (texts) {
-      var all = texts.join('\n'), names = [], re2 = /["'`](x-[a-z0-9\-]*(?:embed|parent|origin|referer|referrer|host|domain)[a-z0-9\-]*)["'`]/gi, m2;
-      while ((m2 = re2.exec(all))) names.push(m2[1].toLowerCase());
-      names = uniq(names);
-      note('hdr ' + (names.join(',') || 'yok') + (/fingerprint/i.test(all) ? ' fp' : ''));
-      if (!names.length) return null;
-      var h = embedHeaderSets(u, host)[0];
-      names.forEach(function (n) {
-        var v = null;
-        if (/parent|referer|referrer/.test(n)) v = embedParent();
-        else if (/origin/.test(n)) v = AYAR.SITE;
-        else if (/host|domain/.test(n)) v = siteHost();
-        if (v) h[n] = v;
-      });
-      return h;
+// Yeni Filemoon/Byse: önce details -> embed_frame_url; playback o adresteki sunucudadır
+function filemoonViaApi(u, code, host) {
+  var det = 'https://' + host + '/api/videos/' + code + '/embed/details';
+  var hd = { 'User-Agent': UA, 'Referer': u, 'Accept': 'application/json', 'Origin': 'https://' + host, 'X-Embed-Parent': embedParent() };
+  return req('GET', det, hd, null, 'FD').then(function (r) {
+    var o = null; try { o = JSON.parse(r.text); } catch (e) { o = null; }
+    if (r.status !== 200 || !o) note('fd ' + r.status + ' ' + snip(r.text, 90));
+    var frame = (o && (o.embed_frame_url || o.embedFrameUrl || o.embed_url)) || '';
+    if (frame) note('frame ' + strip(frame).slice(0, 80));
+    if (!o || r.status !== 200) return null;   // details reddedildi: korumalı, devam etme
+    var pHost = frame ? hostOf(absUrl(frame)) : host;
+    var ref = frame ? absUrl(frame) : u;
+    return filemoonPlayback(pHost, code, ref, embedParent()).then(function (x) {
+      if (x || pHost === host) return x;
+      return filemoonPlayback(host, code, u, embedParent());
     });
-  });
-}
-
-function fmViaPage(u, host) {
-  return req('GET', u, { 'User-Agent': UA, 'Referer': embedParent() }, null, null).then(function (r) {
-    var m = findM3u8(r.text);
-    if (!m) { var un = unpack(r.text); if (un) m = findM3u8(un); }
-    return m ? { url: m, host: host } : null;
   });
 }
 
 function resolveFilemoon(u) {
   var code = (u.match(/\/(?:e|d|embed)\/([A-Za-z0-9]+)/) || [])[1];
   var host = hostOf(u);
-  var done = function (x) {
-    if (!x) return null;
-    var h = x.host || host;
-    return { url: x.url, type: /\.m3u8/i.test(x.url) ? 'hls' : 'mp4',
-      headers: { 'User-Agent': UA, 'Referer': 'https://' + h + '/', 'Origin': 'https://' + h } };
+  var hdr = function (m3u8, ref) { return { url: m3u8, type: 'hls', headers: { 'User-Agent': UA, 'Referer': ref } }; };
+  var viaPage = function () {
+    return req('GET', u, { 'User-Agent': UA, 'Referer': AYAR.SITE + '/' }, null, 'FP').then(function (r) {
+      var m = findM3u8(r.text);
+      if (!m) { var un = unpack(r.text); if (un) m = findM3u8(un); }
+      if (m) return hdr(m, 'https://' + host + '/');
+      var ifr = r.text.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+      if (ifr) {
+        var iu = absUrl(ifr[1]), ic = (iu.match(/\/(?:e|d|embed)\/([A-Za-z0-9]+)/) || [])[1];
+        if (ic) return filemoonPlayback(hostOf(iu), ic, iu, u).then(function (x) { return x ? hdr(x, 'https://' + hostOf(iu) + '/') : null; });
+      }
+      note('filemoon kaynak yok ' + strip(u).slice(0, 60));
+      var re2 = /(?:src|href)=["']([^"']+\.(?:js|json)[^"']*)["']/gi, m2, k2 = 0;
+      while ((m2 = re2.exec(r.text)) && k2 < 4) { k2++; note('q' + k2 + ' ' + strip(m2[1]).slice(0, 90)); }
+      return null;
+    });
   };
-  if (!code) return fmViaPage(u, host).then(done);
-
-  var sets = embedHeaderSets(u, host), tried = 0, discovered = false;
-  function seqHosts(hosts, i, hd, tag) {
-    if (i >= hosts.length) return Promise.resolve(null);
-    return fmPlayback(hosts[i], code, hd).then(function (p) {
-      if (p.url) return { url: p.url, host: hosts[i] };
-      note('pb ' + tag + ' ' + hosts[i].slice(0, 14) + ' ' + p.err);
-      return seqHosts(hosts, i + 1, hd, tag);
-    });
-  }
-  function next() {
-    if (tried >= sets.length) {
-      if (discovered) return Promise.resolve(null);
-      discovered = true;
-      return discoverHeaders(u, host).then(function (ex) {
-        if (ex) sets.push(ex);
-        return tried < sets.length ? next() : null;
-      });
-    }
-    var hd = sets[tried], tag = 'v' + (tried + 1); tried++;
-    return fmDetails(host, code, hd).then(function (d) {
-      note('fd ' + tag + ' ' + d.status + (d.status === 200 ? '' : ' ' + snip(d.text, 130)));
-      var hosts = [host];
-      if (d.frame) { var fh = hostOf(absUrl(d.frame)); if (fh && fh !== host) hosts.push(fh); }
-      return seqHosts(hosts, 0, hd, tag).then(function (x) { return x || next(); });
-    });
-  }
-  return next().then(function (x) { return x || fmViaPage(u, host); }).then(done);
+  if (!code) return viaPage();
+  return filemoonViaApi(u, code, host).then(function (x) { return x ? hdr(x, 'https://' + host + '/') : viaPage(); });
 }
 
 function peek(text, tag) {
@@ -522,19 +441,6 @@ function iframesOf(text) {
   if (!out.length) { var mm = t.match(/(https?:\/\/[^"'\s<>]+)/i); if (mm) out.push(absUrl(mm[1])); }
   return out;
 }
-function tryCaptchaPage(cu, pageUrl) {
-  return req('GET', cu, { 'User-Agent': UA, 'Referer': pageUrl, 'Accept': 'text/html,*/*' }, null, 'CP').then(function (r) {
-    var hit = findPlayable(r.text, cu);
-    if (hit) return hit;
-    var cand = outLinks(r.text).filter(function (x) { return /pixeldrain|vidmoly|filemoon|bysejikuar|bysezoxexe|bysekoze/i.test(hostOf(x)); });
-    var ifr = iframeOf(r.text);
-    if (ifr) cand.unshift(ifr);
-    if (cand.length) return resolveEmbed(cand[0]);
-    if (!CAP_PEEKED) { CAP_PEEKED = true; peek(r.text, 'cp'); }
-    note('  atlandi: insan dogrulamasi (Turnstile) arkasinda');
-    return null;
-  });
-}
 function isCaptcha(u) { return /recaptcha|captcha/i.test(String(u)); }
 function iframeOf(text) {
   var good = iframesOf(text).filter(function (x) { return !isCaptcha(x); });
@@ -624,34 +530,17 @@ function streamsFromProbe(pr, dil, pageUrl, found) {
     return embedFetch(a.id, pr.path, pageUrl, found).then(function (er) {
       if (!er.iu) { note('embed yok ' + a.ad + ' ' + snip(er.text, 50)); return null; }
       note('emb ' + snip(a.ad, 14) + ' ' + strip(er.iu).slice(0, 80));
-      var job = isCaptcha(er.iu) ? tryCaptchaPage(er.iu, pageUrl) : resolveEmbed(er.iu);
-      return job.catch(function () { return null; }).then(function (res) {
-        if (!res) return null;
-        var item = { ad: a.ad, etiket: etiket, dil: dil, r: res };
-        PART.push(item);
-        return item;
+      if (isCaptcha(er.iu)) { note('  atlandi: insan dogrulamasi (Turnstile) arkasinda'); return null; }
+      return resolveEmbed(er.iu).catch(function () { return null; }).then(function (res) {
+        return res ? { ad: a.ad, etiket: etiket, dil: dil, r: res } : null;
       });
     });
   }));
 }
 
 // ---------------- Ana akış ----------------
-function buildStreams(all) {
-  var seen = {};
-  all = all.filter(function (x) { if (seen[x.r.url]) return false; seen[x.r.url] = 1; return true; });
-  all.sort(function (a, b) { return a.dil - b.dil; }); // dublaj önce
-  return all.slice(0, AYAR.MAKS_AKIS).map(function (x) {
-    var q = qualityOf(x.r.url);
-    return {
-      name: AYAR.EKLENTI_ADI + ' - ' + x.ad + ' (' + x.etiket + ')',
-      title: AYAR.EKLENTI_ADI + ' | ' + x.etiket + ' | ' + x.ad + (q !== 'Auto' ? ' | ' + q : ''),
-      url: x.r.url, quality: q, headers: x.r.headers, type: x.r.type, provider: PROVIDER_ID
-    };
-  });
-}
-
 function getStreamsInner(tmdbId, mediaType, season, episode, holder) {
-  dbg = ['v1.1.0']; PART = []; CAP_PEEKED = false;
+  dbg = ['v1.0.7'];
   if (mediaType !== 'tv' && mediaType !== 'series') return Promise.resolve(debugStream('sadece dizi destekleniyor'));
   season = parseInt(season, 10) || 1; episode = parseInt(episode, 10) || 1;
   var base = 'https://api.themoviedb.org/3/tv/' + tmdbId + '?api_key=' + TMDB_KEY;
@@ -677,7 +566,17 @@ function getStreamsInner(tmdbId, mediaType, season, episode, holder) {
       }).then(function (lists) {
         var all = [];
         lists.forEach(function (l) { l.forEach(function (x) { if (x) all.push(x); }); });
-        holder.streams = buildStreams(all);
+        var seen = {};
+        all = all.filter(function (x) { if (seen[x.r.url]) return false; seen[x.r.url] = 1; return true; });
+        all.sort(function (a, b) { return a.dil - b.dil; }); // dublaj önce
+        all.slice(0, AYAR.MAKS_AKIS).forEach(function (x) {
+          var q = qualityOf(x.r.url);
+          holder.streams.push({
+            name: AYAR.EKLENTI_ADI + ' - ' + x.ad + ' (' + x.etiket + ')',
+            title: AYAR.EKLENTI_ADI + ' | ' + x.etiket + ' | ' + x.ad + (q !== 'Auto' ? ' | ' + q : ''),
+            url: x.r.url, quality: q, headers: x.r.headers, type: x.r.type, provider: PROVIDER_ID
+          });
+        });
         return holder.streams.length ? holder.streams : debugStream('kaynak cikmadi');
       });
     });
@@ -688,7 +587,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
   return new Promise(function (resolve) {
     var done = false, holder = { streams: [] };
     var timer = setTimeout(function () {
-      if (!done) { done = true; var part = buildStreams(PART.slice()); resolve(part.length ? part : debugStream('zaman asimi')); }
+      if (!done) { done = true; resolve(holder.streams.length ? holder.streams : debugStream('zaman asimi')); }
     }, AYAR.GENEL_SURE);
     getStreamsInner(tmdbId, mediaType, season, episode, holder).then(function (r) {
       if (!done) { done = true; clearTimeout(timer); resolve(r || []); }
