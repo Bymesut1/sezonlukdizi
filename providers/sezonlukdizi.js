@@ -1,5 +1,5 @@
 // ============================================================
-//  sezonlukdizi — Nuvio scraper                                  v1.0.9
+//  sezonlukdizi — Nuvio scraper                                  v1.1.0
 //  Site: https://sezonlukdizi.cc  (yalnızca dizi)
 //  Akış: TMDB -> başlık/slug -> bölüm sayfası (bölüm id'si)
 //        -> dataAlternatif3.asp (dublaj + altyazı) -> dataEmbed.asp
@@ -9,18 +9,14 @@
 var AYAR = {
   SITE: 'https://sezonlukdizi.cc',
   EKLENTI_ADI: 'SezonlukDizi',
-  DEBUG_MODU: true,      // true: akış çıkmazsa nedenini "DEBUG" satırlarıyla gösterir
+  DEBUG_MODU: false,     // false: akış yoksa temiz boş liste ("kaynak yok"); true: nedenini DEBUG satırlarıyla gösterir
   MAKS_AKIS: 12,
-  MAKS_ALTERNATIF: 6,    // her dil için denenecek en fazla alternatif sayısı
+  MAKS_ALTERNATIF: 10,   // her dil için denenecek en fazla alternatif sayısı
   ISTEK_SURESI: 12000,
   GENEL_SURE: 45000,
   // Elle eklenen linkler. Anahtar: 'tmdbId:sezon:bolum'  (Supernatural TMDB id = 1622)
   // Not: bu linkler süreli (e=43200 ~ 12 saat), süresi dolunca yenisini yapıştır.
-  MANUEL: {
-    '1622:1:1': [
-      { ad: 'Manuel', url: 'https://prx-1560-ant-t.vmpx.online/hls2/02/01270/fj99m7vbq2sj_n/index-v1-a1.m3u8?t=wtx-hcl5SOJzn0_4M9_H0u5X3QFvBISDuC32CDpFKco=&s=1792043167&e=43200&v=&srv=box-1425-t10&i=0.4&sp=0&asn=20978' }
-    ]
-  }
+  MANUEL: {}
 };
 
 var TMDB_KEY = '000316508321ce461cf81e7c6815eec7';
@@ -546,7 +542,7 @@ function streamsFromProbe(pr, dil, pageUrl, found) {
 
 // ---------------- Ana akış ----------------
 function getStreamsInner(tmdbId, mediaType, season, episode, holder) {
-  dbg = ['v1.0.9'];
+  dbg = ['v1.1.0'];
   manuelStreams(tmdbId, parseInt(season, 10) || 1, parseInt(episode, 10) || 1).forEach(function (x) { holder.streams.push(x); });
   if (mediaType !== 'tv' && mediaType !== 'series') return Promise.resolve(debugStream('sadece dizi destekleniyor'));
   season = parseInt(season, 10) || 1; episode = parseInt(episode, 10) || 1;
