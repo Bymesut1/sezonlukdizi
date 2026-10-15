@@ -1,5 +1,5 @@
 // ============================================================
-//  sezonlukdizi — Nuvio scraper                                  v1.0.8
+//  sezonlukdizi — Nuvio scraper                                  v1.0.9
 //  Site: https://sezonlukdizi.cc  (yalnızca dizi)
 //  Akış: TMDB -> başlık/slug -> bölüm sayfası (bölüm id'si)
 //        -> dataAlternatif3.asp (dublaj + altyazı) -> dataEmbed.asp
@@ -13,7 +13,14 @@ var AYAR = {
   MAKS_AKIS: 12,
   MAKS_ALTERNATIF: 6,    // her dil için denenecek en fazla alternatif sayısı
   ISTEK_SURESI: 12000,
-  GENEL_SURE: 45000
+  GENEL_SURE: 45000,
+  // Elle eklenen linkler. Anahtar: 'tmdbId:sezon:bolum'  (Supernatural TMDB id = 1622)
+  // Not: bu linkler süreli (e=43200 ~ 12 saat), süresi dolunca yenisini yapıştır.
+  MANUEL: {
+    '1622:1:1': [
+      { ad: 'Manuel', url: 'https://prx-1560-ant-t.vmpx.online/hls2/02/01270/fj99m7vbq2sj_n/index-v1-a1.m3u8?t=wtx-hcl5SOJzn0_4M9_H0u5X3QFvBISDuC32CDpFKco=&s=1792043167&e=43200&v=&srv=box-1425-t10&i=0.4&sp=0&asn=20978' }
+    ]
+  }
 };
 
 var TMDB_KEY = '000316508321ce461cf81e7c6815eec7';
@@ -239,8 +246,7 @@ function filemoonPlayback(host, code, referer, parent, method) {
   var url = 'https://' + host + '/api/videos/' + code + '/embed/playback';
   var hd = { 'User-Agent': UA, 'Referer': referer, 'Accept': '*/*', 'Origin': 'https://' + host, 'X-Embed-Parent': parent || embedParent() };
   return req(method || 'GET', url, hd, method === 'POST' ? '{}' : null, 'FM').then(function (r) {
-    if (r.status === 428 || /captcha_required/i.test(r.text)) { note('filemoon: insan dogrulamasi (captcha_required), atlandi'); return null; }
-    if (r.status === 405 && !method) { note('filemoon: yayin adresi GET kabul etmiyor, atlandi'); return null; }
+    if (r.status === 405 && !method) return filemoonPlayback(host, code, referer, parent, 'POST');
     var o; try { o = JSON.parse(r.text); } catch (e) { note('fm yanit ' + snip(r.text, 70)); return null; }
     var pb = o && o.playback;
     if (!pb || !pb.iv || !pb.payload || !pb.key_parts) { note('fm ' + r.status + ' ' + snip(r.text, 70)); return null; }
@@ -509,14 +515,14 @@ function probeAlt(bid, dil, pageUrl, cands) {
 }
 function embedFetch(id, altPath, pageUrl, found) {
   var paths = embedCandidates(altPath, found);
-  var cap = null, capText = '';
+  var cap = null;
   function step(i, lastText) {
-    if (i >= paths.length) return Promise.resolve({ iu: cap, text: cap ? capText : lastText });
+    if (i >= paths.length) return Promise.resolve({ iu: cap, text: lastText });
     return ajaxPost(paths[i], [['id', id]], pageUrl).then(function (er) {
       if (er.status === 404) return step(i + 1, lastText);
       var iu = iframeOf(er.text);
       if (iu) return { iu: iu, text: er.text };
-      if (!cap) { var c = iframesOf(er.text).filter(isCaptcha)[0]; if (c) { cap = c; capText = er.text; } }
+      if (!cap) { var c = iframesOf(er.text).filter(isCaptcha)[0]; if (c) cap = c; }
       return step(i + 1, er.text);
     });
   }
@@ -530,14 +536,7 @@ function streamsFromProbe(pr, dil, pageUrl, found) {
     return embedFetch(a.id, pr.path, pageUrl, found).then(function (er) {
       if (!er.iu) { note('embed yok ' + a.ad + ' ' + snip(er.text, 50)); return null; }
       note('emb ' + snip(a.ad, 14) + ' ' + strip(er.iu).slice(0, 80));
-      if (isCaptcha(er.iu)) {
-        var raw = String(er.text || '').replace(/\\\//g, '/');
-        note('raw ' + snip(raw, 150));
-        var hit = (raw.match(/https?:\/\/[a-z0-9.\-]*(?:vidmoly|pixeldrain|filemoon)[^"'\s<>\\]*/i) || [])[0];
-        if (!hit) { note('  atlandi: insan dogrulamasi (Turnstile) arkasinda'); return null; }
-        note('raw baglanti ' + strip(hit).slice(0, 70));
-        er.iu = hit;
-      }
+      if (isCaptcha(er.iu)) { note('  atlandi: insan dogrulamasi (Turnstile) arkasinda'); return null; }
       return resolveEmbed(er.iu).catch(function () { return null; }).then(function (res) {
         return res ? { ad: a.ad, etiket: etiket, dil: dil, r: res } : null;
       });
@@ -547,7 +546,8 @@ function streamsFromProbe(pr, dil, pageUrl, found) {
 
 // ---------------- Ana akış ----------------
 function getStreamsInner(tmdbId, mediaType, season, episode, holder) {
-  dbg = ['v1.0.8'];
+  dbg = ['v1.0.9'];
+  manuelStreams(tmdbId, parseInt(season, 10) || 1, parseInt(episode, 10) || 1).forEach(function (x) { holder.streams.push(x); });
   if (mediaType !== 'tv' && mediaType !== 'series') return Promise.resolve(debugStream('sadece dizi destekleniyor'));
   season = parseInt(season, 10) || 1; episode = parseInt(episode, 10) || 1;
   var base = 'https://api.themoviedb.org/3/tv/' + tmdbId + '?api_key=' + TMDB_KEY;
@@ -588,6 +588,20 @@ function getStreamsInner(tmdbId, mediaType, season, episode, holder) {
       });
     });
   }).catch(function (e) { return holder.streams.length ? holder.streams : debugStream('hata ' + (e && e.message)); });
+}
+
+// ---------------- Manuel linkler ----------------
+function manuelStreams(tmdbId, season, episode) {
+  var list = (AYAR.MANUEL && AYAR.MANUEL[tmdbId + ':' + season + ':' + episode]) || [];
+  return list.map(function (m) {
+    var u = String(m.url).replace(/&amp;/g, '&');
+    return {
+      name: AYAR.EKLENTI_ADI + ' - ' + (m.ad || 'Manuel'),
+      title: AYAR.EKLENTI_ADI + ' | Manuel | ' + (m.ad || 'Manuel'),
+      url: u, quality: qualityOf(u), type: /\.m3u8/i.test(u) ? 'hls' : 'direct',
+      headers: { 'User-Agent': UA }, provider: PROVIDER_ID
+    };
+  });
 }
 
 function getStreams(tmdbId, mediaType, season, episode) {
