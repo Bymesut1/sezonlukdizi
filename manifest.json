@@ -1,12 +1,12 @@
 {
   "name": "Wiojelt Nuvio Providers",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "scrapers": [
     {
       "id": "sezonlukdizi",
       "name": "SezonlukDizi",
       "description": "SezonlukDizi.cc dizileri: Türkçe dublaj ve altyazılı (Pixeldrain, VidMoly, Filemoon)",
-      "version": "1.0.8",
+      "version": "1.0.9",
       "author": "Wiojelt",
       "supportedTypes": ["tv"],
       "enabled": true,
