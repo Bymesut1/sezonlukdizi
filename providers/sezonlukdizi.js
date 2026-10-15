@@ -9,7 +9,7 @@
 var AYAR = {
   SITE: 'https://sezonlukdizi.cc',
   EKLENTI_ADI: 'SezonlukDizi',
-  DEBUG_MODU: false,     // false: akış yoksa temiz boş liste ("kaynak yok"); true: nedenini DEBUG satırlarıyla gösterir
+  DEBUG_MODU: true,     // false: akış yoksa temiz boş liste ("kaynak yok"); true: nedenini DEBUG satırlarıyla gösterir
   SADECE_VIDMOLY: true,  // true: yalnızca VidMoly kaynakları denenir
   MAKS_AKIS: 12,
   MAKS_ALTERNATIF: 10,   // her dil için denenecek en fazla alternatif sayısı
