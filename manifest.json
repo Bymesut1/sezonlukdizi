@@ -1,7 +1,7 @@
 {
   "name": "SezonlukDizi",
   "id": "sezonlukdizi",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "SezonlukDizi (dizi, Türkçe dublaj + altyazı) Nuvio eklenti deposu",
   "author": "Bymesut1",
   "scrapers": [
@@ -9,7 +9,7 @@
       "id": "sezonlukdizi",
       "name": "SezonlukDizi",
       "description": "SezonlukDizi (dizi, Türkçe dublaj + altyazı)",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "Bymesut1",
       "supportedTypes": ["tv"],
       "filename": "providers/sezonlukdizi.js",
