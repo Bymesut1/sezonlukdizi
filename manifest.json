@@ -1,17 +1,20 @@
 {
-  "name": "Wiojelt Nuvio Providers",
-  "version": "1.1.4",
+  "name": "SezonlukDizi",
+  "id": "sezonlukdizi",
+  "version": "1.0.0",
+  "description": "SezonlukDizi (dizi, Türkçe dublaj + altyazı) Nuvio eklenti deposu",
+  "author": "Bymesut1",
   "scrapers": [
     {
       "id": "sezonlukdizi",
       "name": "SezonlukDizi",
-      "description": "SezonlukDizi.cc dizileri: Türkçe dublaj ve altyazılı (Pixeldrain, VidMoly, Filemoon)",
-      "version": "1.1.4",
-      "author": "Wiojelt",
+      "description": "SezonlukDizi (dizi, Türkçe dublaj + altyazı)",
+      "version": "1.0.0",
+      "author": "Bymesut1",
       "supportedTypes": ["tv"],
-      "enabled": true,
       "filename": "providers/sezonlukdizi.js",
-      "formats": ["mp4", "hls"],
+      "enabled": true,
+      "formats": ["m3u8", "mp4"],
       "contentLanguage": ["tr"]
     }
   ]
