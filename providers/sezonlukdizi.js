@@ -12,7 +12,11 @@ var LISTE = '/diziler.asp';
 
 var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
-var DEBUG = false;
+// Sorun giderilene kadar true: adımlar logcat'te [SezonlukDizi] etiketiyle görünür. Düzelince false yap.
+var DEBUG = true;
+
+// Tüm arama + oynatma için toplam süre bütçesi (ms); aşılırsa eldeki akışlarla dönülür
+var TOTAL_BUDGET = 28000;
 
 // Hız sınırında (Cloudflare 1015) beklemek için toplam süre bütçesi (ms)
 var WAIT_BUDGET = 12000;
@@ -142,7 +146,7 @@ function http(method, url, opt) {
                 done = true;
                 resolve(null);
             }
-        }, opt.timeout || 15000);
+        }, opt.timeout || 12000);
         var fin = function (v) {
             if (!done) {
                 done = true;
@@ -475,6 +479,15 @@ function encQ1254(q) {
     return out;
 }
 
+function slugify(t) {
+    return String(t || '')
+        .replace(/İ/g, 'i').replace(/I/g, 'i').replace(/ı/g, 'i')
+        .toLowerCase()
+        .replace(/ğ/g, 'g').replace(/ü/g, 'u').replace(/ş/g, 's').replace(/ö/g, 'o').replace(/ç/g, 'c')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+}
+
 function cleanTitle(t) {
     return String(t || '')
         .replace(/\s*(izle)?\s*[-|–]\s*Sezonluk\s*Dizi.*$/i, '')
@@ -559,8 +572,12 @@ function findSeries(titles) {
         function tryUrl(j) {
             if (j >= urls.length) return Promise.resolve(null);
             return siteGet(urls[j], BASE + '/', 10000).then(function (r) {
+                log('arama', urls[j], r ? r.status : 'yanıt yok', r ? 'uzunluk=' + r.text.length : '');
                 if (!r || r.status < 200 || r.status > 299 || isChallenge(r.status, r.text)) return tryUrl(j + 1);
                 var cards = parseCards(r.text);
+                log('arama kart sayısı', cards.length, cards.slice(0, 3).map(function (c) {
+                    return c.title;
+                }).join(' | '));
                 if (!cards.length) return tryUrl(j + 1);
                 var exact = cards.filter(function (c) {
                     return nt.indexOf(normTitle(c.title)) >= 0;
@@ -583,8 +600,9 @@ function findSeries(titles) {
 }
 
 // Dizi sayfasındaki bölüm bağlantılarından bölüm adresindeki dizi adını (slug) bulur
-function episodeSlugs(seriesPath) {
+function episodeSlugs(seriesPath, extra) {
     return siteGet(BASE + seriesPath, BASE + '/').then(function (r) {
+        log('dizi sayfası', seriesPath, r ? r.status : 'yanıt yok');
         var out = [];
         if (r && r.status >= 200 && r.status < 300 && !isChallenge(r.status, r.text)) {
             var re = /href=["']([^"']+)["']/gi;
@@ -596,7 +614,11 @@ function episodeSlugs(seriesPath) {
         }
         var hint = slugOf(seriesPath);
         if (hint && out.indexOf(hint) < 0) out.push(hint);
-        return out.slice(0, 3);
+        (extra || []).forEach(function (x) {
+            if (x && out.indexOf(x) < 0) out.push(x);
+        });
+        log('bölüm slug adayları', out.join(','));
+        return out.slice(0, 4);
     });
 }
 
@@ -1027,6 +1049,7 @@ function fetchEmbed(st, id, ref) {
             if (k >= embedEndpoints.length) return Promise.resolve({ found: null, raw: '' });
             return sitePost(BASE + embedEndpoints[k], { id: id }, ref).then(function (r) {
                 var raw = r ? ((r.status === 403 || r.status === 503) ? 'HATA ' + r.status : r.text) : 'HATA';
+                log('embed yanıt', embedEndpoints[k], 'id', id, String(raw).slice(0, 100).replace(/\s+/g, ' '));
                 var found = embedOf(raw);
                 if (found) return { found: found, raw: raw };
                 return tryEp(k + 1).then(function (nx) {
@@ -1037,6 +1060,7 @@ function fetchEmbed(st, id, ref) {
         return tryEp(0).then(function (res) {
             if (res.found || !rl(res.raw) || st.waitBudget <= 0 || a >= 2) return res;
             var w = 3000 + a * 2000;
+            if (Date.now() + w > st.deadline) return res;
             st.waitBudget -= w;
             return sleep(w).then(function () {
                 return attempt(a + 1);
@@ -1064,8 +1088,8 @@ function tryId(st, dil, id, ref, nm, idx, suffix) {
     });
 }
 
-function fetchPage(st, pu) {
-    return siteGet(pu, BASE + '/').then(function (r) {
+function fetchPage(st, pu, r0) {
+    return Promise.resolve(r0).then(function (r) {
         if (!r || r.status < 200 || r.status > 299 || isChallenge(r.status, r.text)) {
             log('sayfa alınamadı', pu, r ? r.status : 'yok');
             return;
@@ -1095,7 +1119,7 @@ function prio(dil, idx, nm) {
 function loadLinks(epSlug, s, e) {
     var st = {
         any: false, seen: {}, captchaSeen: {}, got: {}, emitted: {}, retryQ: [], streams: [],
-        pages: [], waitBudget: WAIT_BUDGET, gateProbed: false
+        pages: [], waitBudget: WAIT_BUDGET, gateProbed: false, deadline: Date.now() + TOTAL_BUDGET
     };
     var pageUrls = [
         BASE + '/' + epSlug + '/' + s + '-sezon-' + e + '-bolum.html',
@@ -1126,6 +1150,7 @@ function loadLinks(epSlug, s, e) {
                                 return att(a + 1);
                             });
                         }
+                        log('alt yanıt', altEndpoints[k], 'dil', dil, r ? r.status : 'yok', String(txt).slice(0, 80).replace(/\s+/g, ' '));
                         return altList(txt);
                     });
                 }
@@ -1150,6 +1175,10 @@ function loadLinks(epSlug, s, e) {
         var pos = {};
         var turn = 0;
         function step() {
+            if (Date.now() > st.deadline) {
+                log('süre bütçesi doldu');
+                return Promise.resolve();
+            }
             var job = null;
             for (var t = 0; t < 2 && !job; t++) {
                 var d = (turn + t) % 2;
@@ -1180,7 +1209,7 @@ function loadLinks(epSlug, s, e) {
                 return x.dil === dil;
             }).slice(0, 4);
             return seq(todo, function (t) {
-                if (st.got[dil]) return;
+                if (st.got[dil] || Date.now() > st.deadline) return;
                 return sleep(1200).then(function () {
                     return tryId(st, dil, t.id, t.ref, '', -1, '');
                 });
@@ -1195,7 +1224,7 @@ function loadLinks(epSlug, s, e) {
             var cand = q && q.filter(function (c) {
                 return /vidmoly/i.test(c.name);
             })[0];
-            if (!cand) return;
+            if (!cand || Date.now() > st.deadline) return;
             var ref = refs[dil] || pageUrls[0];
             return fetchEmbed(st, cand.id, ref).then(function (res) {
                 var f = res.found;
@@ -1216,10 +1245,17 @@ function loadLinks(epSlug, s, e) {
         });
     }
 
-    return seq(pageUrls, function (pu) {
-        return fetchPage(st, pu);
+    return Promise.all(pageUrls.map(function (pu) {
+        return siteGet(pu, BASE + '/');
+    })).then(function (rs) {
+        return seq(pageUrls, function (pu, i) {
+            return fetchPage(st, pu, rs[i]);
+        });
     }).then(function () {
-        if (!st.pages.length) return;
+        if (!st.pages.length) {
+            log('hiç bölüm sayfası açılamadı');
+            return;
+        }
         return discoverEndpoints('').then(buildQueues).then(roundRobin).then(retries).then(vidmolyExtra);
     }).then(function () {
         var seen = {};
@@ -1246,12 +1282,16 @@ function getStreams(tmdbId, mediaType, season, episode) {
     var e = episode || 1;
     return tmdbTitles(tmdbId).then(function (titles) {
         if (!titles) return [];
+        log('TMDB başlıkları', titles.join(' / '));
         return findSeries(titles).then(function (path) {
+            var guess = titles.map(slugify).filter(Boolean);
             if (!path) {
-                log('dizi bulunamadı', titles);
-                return [];
+                // Arama sonuç vermediyse başlıktan adres tahmin edilir (örn. Merlin -> /diziler/merlin.html)
+                log('arama bulamadı, slug tahmini', guess.join(','));
+                if (!guess.length) return [];
+                path = '/diziler/' + guess[0] + '.html';
             }
-            return episodeSlugs(path).then(function (slugs) {
+            return episodeSlugs(path, guess).then(function (slugs) {
                 function tryNext(i) {
                     if (i >= slugs.length) return Promise.resolve([]);
                     return loadLinks(slugs[i], s, e).then(function (r) {
